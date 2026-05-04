@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Svetainės Stebėtojas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex flex-col md:flex-row items-center md:items-start justify-center min-h-screen p-4 gap-6">
+    <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+        <h1 class="text-2xl font-bold mb-6 text-center text-gray-800">Stebėjimo Nustatymai</h1>
+        
+        <form id="settingsForm" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700">Svetainės URL</label>
+                <input type="url" id="url" required class="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500" placeholder="https://pavyzdys.lt">
+            </div>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700">Tikrinimo intervalas (minutėmis)</label>
+                <input type="number" id="interval" required min="1" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500" placeholder="5">
+            </div>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700">Discord Webhook URL</label>
+                <input type="url" id="webhook" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500" placeholder="https://discord.com/api/webhooks/...">
+            </div>
+            
+            <div class="flex items-center">
+                <input type="checkbox" id="use_local_notifications" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                <label for="use_local_notifications" class="ml-2 block text-sm text-gray-900">
+                    Rodyti vietinius pranešimus kompiuteryje
+                </label>
+            </div>
+            
+            <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition-colors">
+                Išsaugoti Nustatymus
+            </button>
+        </form>
+        
+        <div id="message" class="mt-4 hidden text-sm font-medium text-center rounded p-2 transition-all"></div>
+    </div>
+
+    <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md flex flex-col">
+        <h1 class="text-2xl font-bold mb-6 text-center text-gray-800">Stebėjimo Būsena</h1>
+        
+        <div class="flex flex-wrap justify-center gap-2 mb-6">
+            <button onclick="sendControl('start')" id="btnStart" class="bg-green-600 text-white font-semibold py-1 px-3 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors">Pradėti</button>
+            <button onclick="sendControl('pause')" id="btnPause" class="bg-yellow-500 text-white font-semibold py-1 px-3 rounded hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-yellow-400 transition-colors">Pauzė</button>
+            <button onclick="sendControl('stop')" id="btnStop" class="bg-red-600 text-white font-semibold py-1 px-3 rounded hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors">Stop</button>
+            <button onclick="sendControl('clear')" id="btnClear" class="bg-gray-600 text-white font-semibold py-1 px-3 rounded hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-colors">Išvalyti</button>
+        </div>
+
+        <div class="mb-4">
+            <h2 class="text-sm font-medium text-gray-700">Būsena</h2>
+            <p id="monitoringStatus" class="text-lg font-semibold text-gray-900">-</p>
+        </div>
+
+        <div class="mb-4">
+            <h2 class="text-sm font-medium text-gray-700">Paskutinį kartą tikrinta</h2>
+            <p id="lastChecked" class="text-lg font-semibold text-gray-900">-</p>
+        </div>
+        
+        <div class="mb-4">
+            <h2 class="text-sm font-medium text-gray-700">Kitas patikrinimas po</h2>
+            <p id="countdown" class="text-2xl font-bold text-blue-600">-</p>
+        </div>
+        
+        <div class="flex-1">
+            <h2 class="text-sm font-medium text-gray-700 mb-2">Paskutiniai įvykiai</h2>
+            <ul id="eventList" class="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded p-2 h-48 overflow-y-auto space-y-2">
+                <li class="text-center text-gray-400 mt-2">Kraunama...</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Užkrauname esamus nustatymus, kai atidaromas puslapis
+        document.addEventListener('DOMContentLoaded', () => {
+            fetch('/api/settings')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('url').value = data.url || '';
+                    document.getElementById('interval').value = data.interval_minutes || '';
+                    document.getElementById('webhook').value = data.webhook_url || '';
+                    document.getElementById('use_local_notifications').checked = data.use_local_notifications || false;
+                })
+                .catch(err => console.error('Klaida užkraunant nustatymus:', err));
+        });
+
+        // Formos pateikimas
+        document.getElementById('settingsForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            
+            const payload = {
+                url: document.getElementById('url').value,
+                interval_minutes: parseInt(document.getElementById('interval').value),
+                webhook_url: document.getElementById('webhook').value,
+                use_local_notifications: document.getElementById('use_local_notifications').checked
+            };
+
+            fetch('/api/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => {
+                const msgEl = document.getElementById('message');
+                msgEl.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700');
+                
+                if (data.status === 'success') {
+                    msgEl.textContent = 'Nustatymai sėkmingai išsaugoti!';
+                    msgEl.classList.add('bg-green-100', 'text-green-700');
+                } else {
+                    msgEl.textContent = 'Įvyko klaida išsaugant nustatymus.';
+                    msgEl.classList.add('bg-red-100', 'text-red-700');
+                }
+                
+                // Paslepiame žinutę po 3 sekundžių
+                setTimeout(() => msgEl.classList.add('hidden'), 3000);
+            })
+            .catch(err => {
+                console.error('Klaida išsaugant:', err);
+                const msgEl = document.getElementById('message');
+                msgEl.textContent = 'Klaida susisiekiant su serveriu.';
+                msgEl.classList.remove('hidden', 'bg-green-100', 'text-green-700');
+                msgEl.classList.add('bg-red-100', 'text-red-700');
+            });
+        });
+
+        function sendControl(action) {
+            fetch('/api/control', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ action: action })
+            })
+            .then(res => res.json())
+            .then(data => {
+                fetchStatus();
+            })
+            .catch(err => console.error('Klaida siunčiant komandą:', err));
+        }
+
+        let targetTime = null;
+        let isMonitoring = false;
+
+        function updateCountdown() {
+            if (!isMonitoring) {
+                document.getElementById('countdown').textContent = 'Pauzė';
+                return;
+            }
+            if (!targetTime) {
+                document.getElementById('countdown').textContent = '-';
+                return;
+            }
+            const now = new Date().getTime();
+            const distance = targetTime - now;
+            if (distance < 0) {
+                document.getElementById('countdown').textContent = 'Tikrinama...';
+                return;
+            }
+            const h = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+            const s = Math.floor((distance % (1000 * 60)) / 1000);
+            let timeStr = '';
+            if (h > 0) timeStr += h + 'h ';
+            if (m > 0 || h > 0) timeStr += m + 'm ';
+            timeStr += s + 's';
+            document.getElementById('countdown').textContent = timeStr;
+        }
+
+        function fetchStatus() {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    isMonitoring = data.is_monitoring;
+                    const statusEl = document.getElementById('monitoringStatus');
+                    if (isMonitoring) {
+                        statusEl.textContent = 'Vyksta stebėjimas';
+                        statusEl.className = 'text-lg font-bold text-green-600';
+                    } else {
+                        statusEl.textContent = 'Sustabdyta';
+                        statusEl.className = 'text-lg font-bold text-red-600';
+                    }
+
+                    if (data.last_checked) {
+                        const date = new Date(data.last_checked);
+                        document.getElementById('lastChecked').textContent = date.toLocaleTimeString('lt-LT');
+                    } else {
+                        document.getElementById('lastChecked').textContent = 'Dar netikrinta';
+                    }
+
+                    if (data.next_check) {
+                        targetTime = new Date(data.next_check).getTime();
+                    } else {
+                        targetTime = null;
+                    }
+
+                    const eventList = document.getElementById('eventList');
+                    if (data.events && data.events.length > 0) {
+                        eventList.innerHTML = '';
+                        data.events.forEach(ev => {
+                            const li = document.createElement('li');
+                            li.className = 'border-b border-gray-200 pb-1 last:border-0';
+                            li.textContent = ev;
+                            eventList.appendChild(li);
+                        });
+                    } else {
+                        eventList.innerHTML = '<li class="text-center text-gray-400 mt-2">Nėra įvykių.</li>';
+                    }
+                })
+                .catch(err => console.error('Klaida gaunant būseną:', err));
+        }
+
+        setInterval(fetchStatus, 1000);
+        setInterval(updateCountdown, 1000);
+        fetchStatus();
+    </script>
+</body>
+</html>
