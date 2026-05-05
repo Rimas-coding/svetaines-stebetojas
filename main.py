@@ -3,6 +3,7 @@ import json
 import asyncio
 import hashlib
 import requests
+from typing import List
 from datetime import datetime, timedelta
 from plyer import notification
 from contextlib import asynccontextmanager
@@ -15,14 +16,12 @@ CONFIG_FILE = "config.json"
 app_status = {
     "last_checked": None,
     "next_check": None,
+    "urls_state": {},
     "events": [],
     "is_monitoring": False
 }
 
-monitor_state = {
-    "last_hash": None,
-    "last_url": None
-}
+monitor_state = {}
 
 def add_event(message: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -31,7 +30,7 @@ def add_event(message: str):
         app_status["events"].pop()
 
 class Settings(BaseModel):
-    url: str
+    urls: List[str]
     interval_minutes: int
     webhook_url: str = ""
     use_local_notifications: bool = False
@@ -50,26 +49,33 @@ def save_settings(settings: Settings):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(settings.dict(), f, indent=4)
 
-async def check_website(settings: Settings, last_hash: str):
+async def check_website(settings: Settings, url: str, last_hash: str):
     try:
         # requests.get yra sinchroninė funkcija, todėl vykdome to_thread, kad neblokuotume event loop
-        response = await asyncio.to_thread(requests.get, settings.url, timeout=10)
+        response = await asyncio.to_thread(requests.get, url, timeout=10)
         response.raise_for_status()
         
         content = response.text
         current_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
         
-        app_status["last_checked"] = datetime.now().isoformat()
+        now_iso = datetime.now().isoformat()
+        app_status["last_checked"] = now_iso
+        
+        if "urls_state" not in app_status:
+            app_status["urls_state"] = {}
+        if url not in app_status["urls_state"]:
+            app_status["urls_state"][url] = {}
+        app_status["urls_state"][url]["last_checked"] = now_iso
         
         if last_hash is not None and current_hash != last_hash:
-            add_event("Rastas pokytis")
-            msg_text = f"🔔 Svetainės ({settings.url}) turinys pasikeitė!"
+            add_event(f"Rastas pokytis: {url}")
+            msg_text = f"🔔 Svetainės ({url}) turinys pasikeitė!"
             
             if settings.webhook_url:
                 msg = {"content": msg_text}
                 try:
                     await asyncio.to_thread(requests.post, settings.webhook_url, json=msg, timeout=10)
-                    print(f"[{settings.url}] Turinys pasikeitė! Pranešimas išsiųstas į Discord.")
+                    print(f"[{url}] Turinys pasikeitė! Pranešimas išsiųstas į Discord.")
                 except Exception as e:
                     print(f"Nepavyko išsiųsti pranešimo į Discord: {e}")
                     
@@ -83,43 +89,78 @@ async def check_website(settings: Settings, last_hash: str):
                             timeout=10
                         )
                     await asyncio.to_thread(show_notification)
-                    print(f"[{settings.url}] Parodytas vietinis pranešimas kompiuteryje.")
+                    print(f"[{url}] Parodytas vietinis pranešimas kompiuteryje.")
                 except Exception as e:
                     print(f"Nepavyko parodyti vietinio pranešimo: {e}")
         elif last_hash is not None:
-            add_event("Patikrinta - pokyčių nėra")
+            add_event(f"Patikrinta ({url}) - pokyčių nėra")
         elif last_hash is None:
-            add_event("Pirmas patikrinimas - pradedamas stebėjimas")
+            add_event(f"Pirmas patikrinimas ({url}) - pradedamas stebėjimas")
             
         return current_hash
     except Exception as e:
-        app_status["last_checked"] = datetime.now().isoformat()
-        add_event(f"Klaida: {str(e)}")
-        print(f"Klaida tikrinant svetainę {settings.url}: {e}")
+        now_iso = datetime.now().isoformat()
+        app_status["last_checked"] = now_iso
+        if "urls_state" not in app_status:
+            app_status["urls_state"] = {}
+        if url not in app_status["urls_state"]:
+            app_status["urls_state"][url] = {}
+        app_status["urls_state"][url]["last_checked"] = now_iso
+        
+        add_event(f"Klaida ({url}): {str(e)}")
+        print(f"Klaida tikrinant svetainę {url}: {e}")
         return last_hash
 
 async def monitoring_task():
     while True:
         if not app_status["is_monitoring"]:
             app_status["next_check"] = None
+            for url in app_status.get("urls_state", {}):
+                app_status["urls_state"][url]["next_check"] = None
             await asyncio.sleep(1)
             continue
 
         settings = load_settings()
         
-        if not settings or not settings.url or settings.interval_minutes <= 0:
+        if not settings or not settings.urls or settings.interval_minutes <= 0:
             app_status["next_check"] = None
+            for url in app_status.get("urls_state", {}):
+                app_status["urls_state"][url]["next_check"] = None
             await asyncio.sleep(10)
             continue
             
-        if settings.url != monitor_state["last_url"]:
-            monitor_state["last_hash"] = None
-            monitor_state["last_url"] = settings.url
+        if "urls_state" not in app_status:
+            app_status["urls_state"] = {}
             
-        monitor_state["last_hash"] = await check_website(settings, monitor_state["last_hash"])
+        for url in settings.urls:
+            if url not in monitor_state:
+                monitor_state[url] = {"last_hash": None}
+            if url not in app_status["urls_state"]:
+                app_status["urls_state"][url] = {"last_checked": None, "next_check": None}
+                
+        for url in list(monitor_state.keys()):
+            if url not in settings.urls:
+                del monitor_state[url]
+        for url in list(app_status["urls_state"].keys()):
+            if url not in settings.urls:
+                del app_status["urls_state"][url]
+                
+        tasks = []
+        for url in settings.urls:
+            tasks.append(check_website(settings, url, monitor_state[url]["last_hash"]))
+            
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for url, result in zip(settings.urls, results):
+            if not isinstance(result, Exception):
+                monitor_state[url]["last_hash"] = result
         
         total_sleep = settings.interval_minutes * 60
-        app_status["next_check"] = (datetime.now() + timedelta(seconds=total_sleep)).isoformat()
+        next_time = (datetime.now() + timedelta(seconds=total_sleep)).isoformat()
+        app_status["next_check"] = next_time
+        
+        for url in settings.urls:
+            app_status["urls_state"][url]["next_check"] = next_time
         
         # Miegoti mažais intervalais, kad greitai reaguotume į nustatymų pasikeitimus (pvz., pakeitus intervalą)
         slept = 0
@@ -131,7 +172,7 @@ async def monitoring_task():
             
             if slept % 5 == 0:
                 new_settings = load_settings()
-                if new_settings and (new_settings.url != settings.url or new_settings.interval_minutes != settings.interval_minutes):
+                if new_settings and (new_settings.urls != settings.urls or new_settings.interval_minutes != settings.interval_minutes):
                     break
 
 @asynccontextmanager
@@ -155,7 +196,7 @@ def get_settings():
     settings = load_settings()
     if settings:
         return settings
-    return Settings(url="", interval_minutes=5, webhook_url="", use_local_notifications=False)
+    return Settings(urls=[], interval_minutes=5, webhook_url="", use_local_notifications=False)
 
 @app.post("/api/settings")
 def update_settings(settings: Settings):
@@ -176,13 +217,17 @@ def control_monitoring(payload: ControlAction):
     elif action == "pause":
         app_status["is_monitoring"] = False
         app_status["next_check"] = None
+        for url in app_status.get("urls_state", {}):
+            app_status["urls_state"][url]["next_check"] = None
     elif action == "stop":
         app_status["is_monitoring"] = False
         app_status["next_check"] = None
-        monitor_state["last_hash"] = None
+        for url in app_status.get("urls_state", {}):
+            app_status["urls_state"][url]["next_check"] = None
+        monitor_state.clear()
     elif action == "clear":
         app_status["events"].clear()
-        monitor_state["last_hash"] = None
+        monitor_state.clear()
     else:
         raise HTTPException(status_code=400, detail="Nežinoma komanda")
     return {"status": "success", "is_monitoring": app_status["is_monitoring"]}

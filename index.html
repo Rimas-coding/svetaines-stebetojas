@@ -12,8 +12,8 @@
         
         <form id="settingsForm" class="space-y-4">
             <div>
-                <label class="block text-sm font-medium text-gray-700">Svetainės URL</label>
-                <input type="url" id="url" required class="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500" placeholder="https://pavyzdys.lt">
+                <label class="block text-sm font-medium text-gray-700">Svetainių URL (po vieną eilutėje)</label>
+                <textarea id="urls" required rows="3" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2 border focus:ring-blue-500 focus:border-blue-500" placeholder="https://pavyzdys.lt&#10;https://kitas.lt"></textarea>
             </div>
             
             <div>
@@ -80,7 +80,7 @@
             fetch('/api/settings')
                 .then(res => res.json())
                 .then(data => {
-                    document.getElementById('url').value = data.url || '';
+                    document.getElementById('urls').value = (data.urls || []).join('\n');
                     document.getElementById('interval').value = data.interval_minutes || '';
                     document.getElementById('webhook').value = data.webhook_url || '';
                     document.getElementById('use_local_notifications').checked = data.use_local_notifications || false;
@@ -92,8 +92,11 @@
         document.getElementById('settingsForm').addEventListener('submit', (e) => {
             e.preventDefault();
             
+            const urlText = document.getElementById('urls').value;
+            const urls = urlText.split('\n').map(u => u.trim()).filter(u => u);
+            
             const payload = {
-                url: document.getElementById('url').value,
+                urls: urls,
                 interval_minutes: parseInt(document.getElementById('interval').value),
                 webhook_url: document.getElementById('webhook').value,
                 use_local_notifications: document.getElementById('use_local_notifications').checked
