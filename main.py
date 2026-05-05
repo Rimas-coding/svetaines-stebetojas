@@ -3,6 +3,7 @@ import json
 import asyncio
 import hashlib
 import requests
+import random
 from typing import List
 from datetime import datetime, timedelta
 from plyer import notification
@@ -12,6 +13,30 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 CONFIG_FILE = "config.json"
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 OPR/109.0.0.0"
+]
+
+def get_headers():
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "lt-LT,lt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    }
 
 app_status = {
     "last_checked": None,
@@ -49,10 +74,16 @@ def save_settings(settings: Settings):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(settings.dict(), f, indent=4)
 
-async def check_website(settings: Settings, url: str, last_hash: str):
+async def check_website(settings: Settings, url: str, last_hash: str, retry_count: int = 0):
     try:
         # requests.get yra sinchroninė funkcija, todėl vykdome to_thread, kad neblokuotume event loop
-        response = await asyncio.to_thread(requests.get, url, timeout=10)
+        response = await asyncio.to_thread(requests.get, url, headers=get_headers(), timeout=15)
+        
+        if response.status_code == 403 and retry_count < 1:
+            add_event(f"403 Blokavimas ({url}) - bandoma vėl po 10s...")
+            await asyncio.sleep(10)
+            return await check_website(settings, url, last_hash, retry_count + 1)
+            
         response.raise_for_status()
         
         content = response.text
@@ -147,6 +178,9 @@ async def monitoring_task():
                 
         tasks = []
         for url in settings.urls:
+            # Pridedame atsitiktinį vėlavimą prieš kiekvieną užklausą (2-7 sek.)
+            delay = random.uniform(2, 7)
+            await asyncio.sleep(delay)
             tasks.append(check_website(settings, url, monitor_state[url]["last_hash"]))
             
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -156,6 +190,9 @@ async def monitoring_task():
                 monitor_state[url]["last_hash"] = result
         
         total_sleep = settings.interval_minutes * 60
+        # Pridedame nedidelį atsitiktinumą prie bendro laukimo laiko (+/- 10%)
+        total_sleep = total_sleep * random.uniform(0.9, 1.1)
+        
         next_time = (datetime.now() + timedelta(seconds=total_sleep)).isoformat()
         app_status["next_check"] = next_time
         
